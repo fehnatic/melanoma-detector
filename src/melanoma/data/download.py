@@ -9,13 +9,17 @@ Zwei verschiedene Bezugswege, aus gutem Grund:
   liefert das Archiv eine offizielle Liste bekannter Duplikate mit.
   Lizenz: CC-BY-NC 4.0, Zitationspflicht - siehe CITATION.md.
 
-* Die beiden anderen Datensaetze gibt es nur auf Kaggle. Dafuer wird ein
-  API-Token gebraucht (kostenlos), aber keinerlei Competition-Zustimmung.
+* Die beiden anderen Datensaetze liegen auf Kaggle, sind dort aber oeffentlich
+  freigegeben und lassen sich ohne Account und ohne API-Token ueber den
+  Download-Endpunkt ziehen (verifiziert: 99 MB bzw. 79 MB, HTTP 206 ohne
+  Authorization-Header). Sollte Kaggle das irgendwann dichtmachen, siehe den
+  Hinweis in download_kaggle_dataset().
+
+Ergebnis: Das gesamte Projekt braucht keinerlei Zugangsdaten.
 """
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import zipfile
@@ -30,12 +34,11 @@ ISIC_FILES = {
     "duplicates": "ISIC_2020_Training_Duplicates.csv",
 }
 
+KAGGLE_DOWNLOAD = "https://www.kaggle.com/api/v1/datasets/download"
 DATASET_SLUGS = {
     "mittal": "bhaveshmittal/melanoma-cancer-dataset",
     "javed": "hasnainjaved/melanoma-skin-cancer-dataset-of-10000-images",
 }
-
-KAGGLE_SOURCES = set(DATASET_SLUGS)
 
 
 def _human(num_bytes: float) -> str:
@@ -47,12 +50,26 @@ def _human(num_bytes: float) -> str:
 
 
 def remote_size(url: str) -> int | None:
+    """Groesse einer Datei ermitteln, ohne sie zu laden."""
     try:
         resp = requests.head(url, allow_redirects=True, timeout=30)
-        resp.raise_for_status()
-        return int(resp.headers.get("content-length", 0)) or None
+        if resp.ok:
+            size = int(resp.headers.get("content-length", 0))
+            if size:
+                return size
     except Exception:  # noqa: BLE001
-        return None
+        pass
+    try:
+        # Kaggle beantwortet HEAD mit 404, liefert aber auf einen Range-GET
+        # brav einen Content-Range-Header mit der Gesamtgroesse.
+        resp = requests.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=30)
+        resp.close()
+        content_range = resp.headers.get("content-range", "")
+        if "/" in content_range:
+            return int(content_range.rsplit("/", 1)[1])
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -123,40 +140,39 @@ def download_isic2020(raw_dir: Path, keep_zip: bool = False, dry_run: bool = Fal
 # --------------------------------------------------------------------------- #
 # Kaggle-Datensaetze
 # --------------------------------------------------------------------------- #
-def check_kaggle_credentials() -> None:
-    import os
+def download_kaggle_dataset(name: str, raw_dir: Path, dry_run: bool = False) -> Path:
+    """Laedt einen oeffentlichen Kaggle-Datensatz ohne Account.
 
-    if os.environ.get("KAGGLE_USERNAME") and os.environ.get("KAGGLE_KEY"):
-        return
-    cred = Path(os.environ.get("KAGGLE_CONFIG_DIR", Path.home() / ".kaggle")) / "kaggle.json"
-    if cred.exists():
-        return
-    raise SystemExit(
-        "Fuer die Kaggle-Datensaetze fehlt ein API-Token (kostenlos, kein Competition-Beitritt):\n"
-        "  1. https://www.kaggle.com/settings -> Abschnitt 'API' -> 'Create New Token'\n"
-        "  2. mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/\n"
-        "  3. chmod 600 ~/.kaggle/kaggle.json\n\n"
-        "Nur ISIC laden (ganz ohne Kaggle):\n"
-        "  python -m melanoma.data.download --sources isic2020"
-    )
-
-
-def download_kaggle_dataset(name: str, raw_dir: Path) -> Path:
+    Falls Kaggle den offenen Zugriff eines Tages sperrt, meldet sich das hier
+    als HTTP 401/403. Ausweg waere dann ein kostenloser API-Token
+    (https://www.kaggle.com/settings -> API -> Create New Token, ablegen unter
+    ~/.kaggle/kaggle.json) plus `pip install kaggle` und
+    `kaggle datasets download -d <slug> --unzip`.
+    """
     slug = DATASET_SLUGS[name]
+    url = f"{KAGGLE_DOWNLOAD}/{slug}"
     target = raw_dir / name
+
+    if dry_run:
+        size = remote_size(url)
+        print(f"{name} ({slug}):")
+        print(f"  {'ZIP':<45} {_human(size) if size else '?'}")
+        return target
+
     if target.exists() and any(target.rglob("*.jpg")):
         print(f"[{name}] bereits vorhanden -> {target}")
         return target
 
-    if shutil.which("kaggle") is None:
-        raise SystemExit("Das 'kaggle'-Kommando fehlt. Im venv: pip install kaggle")
-
     target.mkdir(parents=True, exist_ok=True)
-    print(f"[{name}] lade {slug} ...")
-    subprocess.run(
-        ["kaggle", "datasets", "download", "-d", slug, "-p", str(target), "--unzip"],
-        check=True,
-    )
+    print(f"[{name}] {slug} (oeffentlich, kein Account noetig):")
+    zip_path = target / f"{name}.zip"
+    _fetch(url, zip_path)
+
+    print("  entpacke ...")
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(target)
+    print(f"  {sum(1 for _ in target.rglob('*.jpg'))} Bilder entpackt")
+    zip_path.unlink()
     return target
 
 
@@ -181,16 +197,11 @@ def main(argv: list[str] | None = None) -> int:
     paths = resolve_paths(cfg)
     paths.mkdirs()
 
-    if not args.dry_run and (set(args.sources) & KAGGLE_SOURCES):
-        check_kaggle_credentials()
-
     for source in args.sources:
         if source == "isic2020":
             download_isic2020(paths.raw, keep_zip=args.keep_zip, dry_run=args.dry_run)
-        elif not args.dry_run:
-            download_kaggle_dataset(source, paths.raw)
         else:
-            print(f"{source}: Kaggle-Datensatz {DATASET_SLUGS[source]} (Groesse erst beim Laden bekannt)")
+            download_kaggle_dataset(source, paths.raw, dry_run=args.dry_run)
 
     if not args.dry_run:
         print("\nFertig. Naechster Schritt: make data")

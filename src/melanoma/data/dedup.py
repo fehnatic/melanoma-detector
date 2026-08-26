@@ -13,6 +13,16 @@ Verfahren:
      sich jedes Paar mit Hamming-Distanz <= 7 garantiert mindestens ein Band,
      der Filter verliert bei Schwellwert <= 5 also nichts.
   3. Exakte Hamming-Distanz auf den Kandidaten, dann Union-Find -> Cluster.
+  3b. Verifikation gegen Verkettung. Union-Find ist Single-Linkage: aus
+     A~B und B~C folgt A~C, auch wenn A und C weit auseinanderliegen. Auf
+     kontrastarmen Bildern, wo pHash unzuverlaessig ist, entstehen dadurch
+     Ketten von ueber hundert Bildern, die keine Duplikate sind (gemessen:
+     nur 6.6% der Paare im groessten Cluster lagen unter dem Schwellwert).
+     Deshalb wird jeder Cluster ab drei Bildern nachgeprueft: greedy wird
+     jeweils das Bild mit den meisten Nachbarn innerhalb des Schwellwerts
+     gewaehlt und nur dessen Umgebungskugel als Cluster akzeptiert. Der
+     Durchmesser eines Clusters ist damit auf 2*max_hamming begrenzt statt
+     unbegrenzt.
   4. Pro Cluster bleibt genau ein Bild uebrig. Prioritaet nach Quelle
      (Default: isic2020 > javed > mittal), weil ISIC als einzige Quelle
      Patienten-IDs mitbringt, die wir fuer den Split brauchen.
@@ -114,6 +124,57 @@ def _resolve_known_pairs(
     return resolved
 
 
+def _refine_clusters(
+    hashes: np.ndarray, cluster_ids: np.ndarray, max_hamming: int
+) -> np.ndarray:
+    """Bricht durch Single-Linkage entstandene Ketten wieder auf.
+
+    Fuer jeden Cluster ab drei Elementen wird wiederholt das Element mit den
+    meisten Nachbarn innerhalb des Schwellwerts gewaehlt und dessen Umgebung
+    als eigener Cluster herausgeloest, bis nichts mehr uebrig ist.
+    """
+    out = cluster_ids.copy()
+    next_id = int(cluster_ids.max()) + 1 if len(cluster_ids) else 0
+    split_count = 0
+
+    by_cluster: dict[int, list[int]] = defaultdict(list)
+    for idx, cid in enumerate(cluster_ids.tolist()):
+        by_cluster[cid].append(idx)
+
+    for cid, members in by_cluster.items():
+        if len(members) < 3:
+            continue
+        values = hashes[np.asarray(members)]
+        dist = np.array([_popcount(v ^ values) for v in values])
+        close = dist <= max_hamming
+        if close.all():
+            continue  # alle gegenseitig aehnlich - nichts zu tun
+
+        remaining = set(range(len(members)))
+        first = True
+        while remaining:
+            order = sorted(remaining)
+            mask = np.zeros(len(members), dtype=bool)
+            mask[order] = True
+            counts = (close & mask).sum(axis=1)
+            counts[~mask] = -1
+            center = int(counts.argmax())
+            ball = [i for i in order if close[center, i]]
+
+            target = cid if first else next_id
+            if not first:
+                next_id += 1
+                split_count += 1
+            for i in ball:
+                out[members[i]] = target
+            remaining -= set(ball)
+            first = False
+
+    if split_count:
+        print(f"[dedup] {split_count} verkettete Cluster aufgebrochen")
+    return out
+
+
 class _UnionFind:
     def __init__(self, n: int) -> None:
         self.parent = list(range(n))
@@ -145,9 +206,6 @@ def cluster_by_hash(
     uf = _UnionFind(n)
     band_width = HASH_BITS // bands
 
-    for a, b in extra_pairs or []:
-        uf.union(a, b)
-
     for band in range(bands):
         shift = band * band_width
         keys = (hashes >> np.uint64(shift)) & np.uint64((1 << band_width) - 1)
@@ -167,7 +225,24 @@ def cluster_by_hash(
                 for j in close.tolist():
                     uf.union(int(idx[i]), int(idx[i + 1 + j]))
 
-    return np.array([uf.find(i) for i in range(n)], dtype=np.int64)
+    clusters = np.array([uf.find(i) for i in range(n)], dtype=np.int64)
+    clusters = _refine_clusters(hashes, clusters, max_hamming)
+
+    # Bekannte Duplikate erst jetzt zusammenfuehren: sie sind Ground Truth und
+    # duerfen von der Verifikation oben nicht wieder auseinandergerissen werden.
+    if extra_pairs:
+        uf2 = _UnionFind(n)
+        by_cluster: dict[int, int] = {}
+        for idx, cid in enumerate(clusters.tolist()):
+            if cid in by_cluster:
+                uf2.union(by_cluster[cid], idx)
+            else:
+                by_cluster[cid] = idx
+        for a, b in extra_pairs:
+            uf2.union(a, b)
+        clusters = np.array([uf2.find(i) for i in range(n)], dtype=np.int64)
+
+    return clusters
 
 
 # --------------------------------------------------------------------------- #

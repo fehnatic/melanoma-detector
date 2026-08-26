@@ -16,7 +16,6 @@ dependencies = [
     "pyyaml>=6.0",
     "gradio>=4.44",
     "grad-cam>=1.5",
-    "kaggle>=1.6",
     "matplotlib>=3.8",
 ]
 

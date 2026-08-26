@@ -19,8 +19,8 @@ aus. Bei jeder Veränderung eines Muttermals gilt: ärztlich abklären lassen.
 | Kürzel     | Quelle | Umfang | Zugang | Labels |
 |------------|--------|--------|--------|--------|
 | `isic2020` | [ISIC-Archiv](https://challenge.isic-archive.com/data/) (= die SIIM-ISIC-Competition-Daten) | 33.126 Bilder, 23 GB | **offen, kein Account** | Ground-Truth-CSV, 584 maligne (1,76 %), mit Patienten- und Läsions-IDs |
-| `mittal`   | [Melanoma Cancer Dataset](https://www.kaggle.com/datasets/bhaveshmittal/melanoma-cancer-dataset) | ~13.900 Bilder | Kaggle-Token | Ordnerstruktur `benign` / `malignant`, ca. 50/50 |
-| `javed`    | [Melanoma Skin Cancer Dataset (10.000 Bilder)](https://www.kaggle.com/datasets/hasnainjaved/melanoma-skin-cancer-dataset-of-10000-images) | ~10.600 Bilder | Kaggle-Token | Ordnerstruktur `benign` / `malignant`, ca. 50/50 |
+| `mittal`   | [Melanoma Cancer Dataset](https://www.kaggle.com/datasets/bhaveshmittal/melanoma-cancer-dataset) | 13.879 Bilder, 79 MB | **offen, kein Account** | Ordner `Benign` / `Malignant`, 47,5 % maligne |
+| `javed`    | [Melanoma Skin Cancer Dataset (10.000 Bilder)](https://www.kaggle.com/datasets/hasnainjaved/melanoma-skin-cancer-dataset-of-10000-images) | 10.605 Bilder, 99 MB | **offen, kein Account** | Ordner `benign` / `malignant`, 48,1 % maligne |
 
 Der Hauptdatensatz wird bewusst **direkt vom ISIC-Archiv** geladen, nicht über
 Kaggle. Es sind dieselben Bilder, aber: kein Kaggle-Account nötig, kein Beitritt
@@ -32,13 +32,18 @@ Lizenz: **CC-BY-NC 4.0**, Zitationspflicht → [`CITATION.md`](CITATION.md).
 
 ### Zwei Dinge, die dabei leicht schiefgehen
 
-**1. Die Quellen überlappen sich.** Alle drei stammen direkt oder indirekt aus dem
-ISIC-Archiv. Datensatz 2 und 3 überschneiden sich stark miteinander, und beide
-enthalten Bilder, die auch in SIIM vorkommen. Wirft man das naiv zusammen und
-splittet zufällig, landen identische Bilder gleichzeitig in Training und
-Validierung — die AUROC sieht dann hervorragend aus und das Modell ist real
-schlecht. Deshalb läuft vor dem Split eine **quellenübergreifende
-Deduplizierung** (`melanoma.data.dedup`, siehe unten).
+**1. Die Quellen überlappen sich — massiv.** Alle drei stammen direkt oder
+indirekt aus dem ISIC-Archiv. Gemessen an `mittal` + `javed` allein:
+
+```
+24.484 Bilder  ->  12.476 nach Deduplizierung   (49 % waren Duplikate)
+mittal: 13.879 ->   2.187                        (84 % steckten schon in javed)
+```
+
+Wirft man das naiv zusammen und splittet zufällig, landet rund die Hälfte der
+Validierungsbilder auch im Training — die AUROC sieht dann hervorragend aus und
+das Modell ist real schlecht. Deshalb läuft vor dem Split zwingend eine
+**quellenübergreifende Deduplizierung** (`melanoma.data.dedup`, siehe unten).
 
 **2. SIIM enthält mehrere Aufnahmen pro Patient.** Ohne gruppenweisen Split misst
 die Validierung teilweise Patienten-Wiedererkennung statt Melanom-Erkennung.
@@ -61,8 +66,8 @@ Trainingssets.
 | Testset (JPEG + DICOM) | ~22 GB | Labels hält die Challenge zurück |
 
 Während des Entpackens werden kurzzeitig ~46 GB belegt; das ZIP wird danach
-automatisch gelöscht (`--keep-zip` behält es). Plus die beiden Kaggle-Datensätze:
-**gesamt ~28 GB** Rohdaten auf der Platte.
+automatisch gelöscht (`--keep-zip` behält es). Plus die beiden Kaggle-Datensätze (79 + 99 MB):
+**gesamt ~23,2 GB** Rohdaten auf der Platte.
 
 Genaue Größen vorab abfragen, ohne etwas zu laden:
 
@@ -82,30 +87,23 @@ stehen ohnehin in der Ground-Truth-CSV.
 make setup        # venv + Abhängigkeiten
 ```
 
-### Kaggle-Zugang (nur für `mittal` und `javed`)
+### Zugangsdaten
 
-Der Hauptdatensatz braucht **keinen Account**. Nur für die beiden kleineren
-Datensätze wird ein Kaggle-API-Token gebraucht — kostenlos, und **ohne** Beitritt
-zu irgendeiner Competition:
+**Keine nötig.** Der ISIC-Datensatz kommt offen vom Archiv, und die beiden
+Kaggle-Datensätze sind dort öffentlich freigegeben und lassen sich ohne Account
+und ohne API-Token über den Download-Endpunkt ziehen (verifiziert: HTTP 206 ohne
+`Authorization`-Header).
 
-1. https://www.kaggle.com/settings → Abschnitt *API* → **Create New Token**
-2. ```bash
-   mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/
-   chmod 600 ~/.kaggle/kaggle.json
-   ```
-
-Ganz ohne Kaggle arbeiten:
-
-```bash
-.venv/bin/python -m melanoma.data.download --sources isic2020
-```
+Falls Kaggle das eines Tages sperrt, meldet sich das als HTTP 401/403; der
+Ausweg über einen kostenlosen API-Token steht im Docstring von
+`download_kaggle_dataset()`.
 
 ---
 
 ## Ablauf
 
 ```bash
-make download     # Rohdaten laden            -> data/raw/          (~28 GB, dauert)
+make download     # Rohdaten laden            -> data/raw/          (~23 GB, einmalig)
 make data         # manifest + dedup + split  -> data/processed/splits.csv
 make train        # Training                  -> artifacts/baseline/best.pt
 make calibrate    # Kalibrierung auf Val      -> artifacts/baseline/calibrator.json
@@ -185,6 +183,15 @@ tests/                      laufen ohne heruntergeladene Daten
    sich jedes Paar mit Hamming-Distanz ≤ 7 garantiert mindestens ein Band — bei
    Schwellwert 5 verliert der Filter also nichts.
 3. Exakte Hamming-Distanz auf den Kandidaten, dann **Union-Find** → Cluster.
+3b. **Verkettungsprüfung.** Union-Find ist Single-Linkage: aus A~B und B~C folgt
+   A~C, auch wenn A und C weit auseinanderliegen. Auf kontrastarmen Bildern, wo
+   pHash unzuverlässig wird, entstanden dadurch Ketten von über hundert Bildern
+   — im größten lagen nur 6,6 % der Paare tatsächlich unter dem Schwellwert.
+   Jeder Cluster ab drei Bildern wird deshalb nachgeprüft: greedy wird das Bild
+   mit den meisten Nachbarn innerhalb des Schwellwerts gewählt und nur dessen
+   Umgebung als Cluster akzeptiert. Der Clusterdurchmesser ist damit auf
+   2·`max_hamming` begrenzt statt unbegrenzt (gemessen: größter Cluster
+   129 → 32, Label-Konflikte 457 → 141 Bilder).
 4. Pro Cluster bleibt ein Bild übrig, Priorität `isic2020 > javed > mittal`
    (ISIC zuerst, weil nur dort Patienten-IDs hängen).
 5. Cluster mit **widersprüchlichen Labels** werden komplett verworfen und

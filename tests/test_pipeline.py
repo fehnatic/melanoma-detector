@@ -8,7 +8,7 @@ import pytest
 
 from melanoma.calibrate import expected_calibration_error, fit_temperature, prior_shift
 from melanoma.config import load_config, resolve_paths
-from melanoma.data.dedup import cluster_by_hash, deduplicate
+from melanoma.data.dedup import _popcount, cluster_by_hash, deduplicate
 from melanoma.data.splits import make_splits
 
 
@@ -218,3 +218,38 @@ def test_deduplicate_honours_known_pairs(monkeypatch):
     kept, report = deduplicate(frame, known_pairs=[("isic2020/A", "isic2020/B")])
     assert len(kept) == 1
     assert report["image_id"].tolist() == ["isic2020/B"]
+
+
+def test_chained_clusters_are_broken_up():
+    """Single-Linkage verkettet A~B~C zu einem Cluster, auch wenn A und C weit
+    auseinanderliegen. Die Verifikation muss das wieder aufbrechen."""
+    # Eine Kette: jeder Nachbar 4 Bit entfernt, die Enden aber 12.
+    chain = [0b0, 0b1111, 0b11111111, 0b111111111111]
+    hashes = np.array(chain, dtype=np.uint64)
+
+    clusters = cluster_by_hash(hashes, max_hamming=5)
+    # Enden duerfen nicht im selben Cluster landen (Distanz 12 > 5).
+    assert clusters[0] != clusters[3]
+    # Jeder Cluster haelt seinen Durchmesser unter 2*max_hamming.
+    for cid in set(clusters.tolist()):
+        members = hashes[clusters == cid]
+        for a in members:
+            for b in members:
+                assert _popcount(np.uint64(a) ^ np.uint64(b)) <= 10
+
+
+def test_refinement_does_not_split_mutually_similar_clusters():
+    """Ein echter Duplikat-Cluster, in dem alle paarweise aehnlich sind,
+    muss unangetastet bleiben."""
+    base = 0b1010101010101010101010101010101010101010101010101010101010101010
+    hashes = np.array([base, base ^ 0b1, base ^ 0b10, base ^ 0b100], dtype=np.uint64)
+    clusters = cluster_by_hash(hashes, max_hamming=5)
+    assert len(set(clusters.tolist())) == 1
+
+
+def test_known_pairs_survive_refinement():
+    """Die offizielle Duplikatliste ist Ground Truth und darf von der
+    Verkettungspruefung nicht wieder aufgetrennt werden."""
+    hashes = np.array([np.uint64(0), np.uint64(0xFFFFFFFFFFFFFFFF)], dtype=np.uint64)
+    merged = cluster_by_hash(hashes, max_hamming=5, extra_pairs=[(0, 1)])
+    assert merged[0] == merged[1]
