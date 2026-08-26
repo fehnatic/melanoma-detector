@@ -8,11 +8,9 @@ paths:
   reports: reports
 
 download:
-  # "jpeg"  = nur die benoetigten SIIM-JPEGs + CSVs (~23 GB, empfohlen)
-  # "full"  = kompletter Competition-Download inkl. DICOM (~108 GB)
-  siim_mode: jpeg
-  workers: 8
-  retries: 4
+  # ISIC 2020 kommt direkt vom ISIC-Archiv (kein Kaggle-Account noetig).
+  # Nach dem Entpacken wird das 23-GB-ZIP geloescht - mit --keep-zip behalten.
+  keep_zip: false
 
 dedup:
   # Perceptual Hash: 8 -> 64 Bit. Zwei Bilder gelten als Duplikat,
@@ -20,8 +18,8 @@ dedup:
   hash_size: 8
   max_hamming: 5
   # Welche Quelle bei einem Duplikat-Cluster gewinnt (erste = hoechste Prio).
-  # SIIM zuerst, weil dort Patienten-IDs fuer den Split haengen.
-  source_priority: [siim, javed, mittal]
+  # ISIC 2020 zuerst, weil nur dort Patienten-IDs fuer den Split haengen.
+  source_priority: [isic2020, javed, mittal]
   workers: 8
 
 split:

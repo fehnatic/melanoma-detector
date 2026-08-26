@@ -2,11 +2,11 @@
 
 Zwei Fallstricke, die hier bewusst adressiert werden:
 
-  * SIIM enthaelt mehrere Aufnahmen pro Patient. Landen Bilder desselben
+  * ISIC 2020 enthaelt mehrere Aufnahmen pro Patient. Landen Bilder desselben
     Patienten in Train und Val, misst die Validierung teilweise
     Patienten-Wiedererkennung statt Melanom-Erkennung. Deshalb wird nach
     patient_id gruppiert.
-  * Das Label ist stark unbalanciert (SIIM ~1.8% maligne). Ohne
+  * Das Label ist stark unbalanciert (ISIC 2020 ~1.8% maligne). Ohne
     Stratifizierung schwankt der Anteil maligner Faelle zwischen den Splits
     so stark, dass die Metriken nicht mehr vergleichbar sind.
 

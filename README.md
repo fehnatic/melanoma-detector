@@ -16,11 +16,19 @@ aus. Bei jeder Veränderung eines Muttermals gilt: ärztlich abklären lassen.
 
 ## Datenquellen
 
-| Kürzel   | Quelle | Umfang | Labels |
-|----------|--------|--------|--------|
-| `siim`   | [SIIM-ISIC Melanoma Classification](https://www.kaggle.com/competitions/siim-isic-melanoma-classification/data) | ~33.000 Bilder | `target` aus `train.csv`, ~1,8 % maligne, mit Patienten-IDs |
-| `mittal` | [Melanoma Cancer Dataset](https://www.kaggle.com/datasets/bhaveshmittal/melanoma-cancer-dataset) | ~13.900 Bilder | Ordnerstruktur `benign` / `malignant`, ca. 50/50 |
-| `javed`  | [Melanoma Skin Cancer Dataset (10.000 Bilder)](https://www.kaggle.com/datasets/hasnainjaved/melanoma-skin-cancer-dataset-of-10000-images) | ~10.600 Bilder | Ordnerstruktur `benign` / `malignant`, ca. 50/50 |
+| Kürzel     | Quelle | Umfang | Zugang | Labels |
+|------------|--------|--------|--------|--------|
+| `isic2020` | [ISIC-Archiv](https://challenge.isic-archive.com/data/) (= die SIIM-ISIC-Competition-Daten) | 33.126 Bilder, 23 GB | **offen, kein Account** | Ground-Truth-CSV, 584 maligne (1,76 %), mit Patienten- und Läsions-IDs |
+| `mittal`   | [Melanoma Cancer Dataset](https://www.kaggle.com/datasets/bhaveshmittal/melanoma-cancer-dataset) | ~13.900 Bilder | Kaggle-Token | Ordnerstruktur `benign` / `malignant`, ca. 50/50 |
+| `javed`    | [Melanoma Skin Cancer Dataset (10.000 Bilder)](https://www.kaggle.com/datasets/hasnainjaved/melanoma-skin-cancer-dataset-of-10000-images) | ~10.600 Bilder | Kaggle-Token | Ordnerstruktur `benign` / `malignant`, ca. 50/50 |
+
+Der Hauptdatensatz wird bewusst **direkt vom ISIC-Archiv** geladen, nicht über
+Kaggle. Es sind dieselben Bilder, aber: kein Kaggle-Account nötig, kein Beitritt
+zur Competition, und die Ground-Truth-Datei liegt dort in der neueren Fassung
+`v2` vor, die zusätzlich `lesion_id` enthält. Obendrein gibt es eine offizielle
+Liste von 424 bekannten Duplikatpaaren.
+
+Lizenz: **CC-BY-NC 4.0**, Zitationspflicht → [`CITATION.md`](CITATION.md).
 
 ### Zwei Dinge, die dabei leicht schiefgehen
 
@@ -39,13 +47,32 @@ gleichzeitig nach Label.
 
 ### Speicherbedarf
 
-Der vollständige SIIM-Download wäre ~108 GB, weil er die DICOM-Originale enthält.
-Die brauchen wir nicht. `melanoma.data.download` lädt deshalb nur `train.csv`,
-leitet daraus die benötigten JPEG-Pfade ab und zieht ausschließlich diese Dateien
-einzeln über die Kaggle-REST-API (**~8–10 GB**, resume-fähig). Das SIIM-Testset
-wird standardmäßig nicht geladen — es ist unlabeled und damit für uns wertlos.
+Der komplette Kaggle-Download der Competition wäre ~108 GB — aber der Großteil
+davon ist **redundant, nicht unlabelt**: dieselben Bilder liegen dort dreifach
+vor (JPEG, DICOM und TFRecords). Wir laden nur die JPEG-Fassung des
+Trainingssets.
 
-Gesamt auf der Platte: ~15 GB Rohdaten.
+| | Größe | |
+|---|---|---|
+| `ISIC_2020_Training_JPEG.zip` | 23,0 GB | wird geladen |
+| Ground Truth + Duplikatliste | 2,3 MB | wird geladen |
+| DICOM-Trainingsset | ~23–49 GB | dieselben Bilder, anderer Container |
+| TFRecords | ~30 GB | dieselben Bilder, TPU-Verpackung |
+| Testset (JPEG + DICOM) | ~22 GB | Labels hält die Challenge zurück |
+
+Während des Entpackens werden kurzzeitig ~46 GB belegt; das ZIP wird danach
+automatisch gelöscht (`--keep-zip` behält es). Plus die beiden Kaggle-Datensätze:
+**gesamt ~28 GB** Rohdaten auf der Platte.
+
+Genaue Größen vorab abfragen, ohne etwas zu laden:
+
+```bash
+.venv/bin/python -m melanoma.data.download --dry-run
+```
+
+Aus den DICOM-Dateien ginge uns nichts verloren: Auflösung ist bei 384 px
+Trainingsgröße irrelevant, und die Metadaten (Alter, Geschlecht, Körperstelle)
+stehen ohnehin in der Ground-Truth-CSV.
 
 ---
 
@@ -55,22 +82,30 @@ Gesamt auf der Platte: ~15 GB Rohdaten.
 make setup        # venv + Abhängigkeiten
 ```
 
-### Kaggle-Zugang
+### Kaggle-Zugang (nur für `mittal` und `javed`)
 
-1. https://www.kaggle.com/settings → *API* → **Create New Token** → `kaggle.json`
+Der Hauptdatensatz braucht **keinen Account**. Nur für die beiden kleineren
+Datensätze wird ein Kaggle-API-Token gebraucht — kostenlos, und **ohne** Beitritt
+zu irgendeiner Competition:
+
+1. https://www.kaggle.com/settings → Abschnitt *API* → **Create New Token**
 2. ```bash
    mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/
    chmod 600 ~/.kaggle/kaggle.json
    ```
-3. **Einmalig im Browser** auf der [SIIM-Competition-Seite](https://www.kaggle.com/competitions/siim-isic-melanoma-classification)
-   die Regeln akzeptieren („Join Competition"). Ohne das liefert die API `403`.
+
+Ganz ohne Kaggle arbeiten:
+
+```bash
+.venv/bin/python -m melanoma.data.download --sources isic2020
+```
 
 ---
 
 ## Ablauf
 
 ```bash
-make download     # Rohdaten von Kaggle       -> data/raw/          (~15 GB, dauert)
+make download     # Rohdaten laden            -> data/raw/          (~28 GB, dauert)
 make data         # manifest + dedup + split  -> data/processed/splits.csv
 make train        # Training                  -> artifacts/baseline/best.pt
 make calibrate    # Kalibrierung auf Val      -> artifacts/baseline/calibrator.json
@@ -125,7 +160,7 @@ falsch-positive.
 configs/default.yaml        alle Hyperparameter und Pfade an einem Ort
 src/melanoma/
   config.py                 YAML laden, Pfade auflösen
-  data/download.py          Kaggle-Download (SIIM selektiv, resume-fähig)
+  data/download.py          ISIC direkt vom Archiv + Kaggle-Datensätze, resume-fähig
   data/manifest.py          drei Quellen -> ein einheitliches Manifest
   data/dedup.py             pHash + LSH + Union-Find, quellenübergreifend
   data/splits.py            gruppenweiser, stratifizierter Split
@@ -142,14 +177,16 @@ tests/                      laufen ohne heruntergeladene Daten
 
 ### Deduplizierung im Detail
 
+0. **Offizielle Duplikatliste** des ISIC-Archivs (424 Paare) — das ist Ground
+   Truth und wird ohne Schwellwert direkt eingespeist.
 1. **pHash** (64 Bit) pro Bild — robust gegen Reskalierung und JPEG-Artefakte,
    also genau gegen die Unterschiede zwischen den Quellen.
 2. **LSH-Banding** (8 Bänder à 8 Bit) als Kandidatenfilter. Bei 8 Bändern teilt
    sich jedes Paar mit Hamming-Distanz ≤ 7 garantiert mindestens ein Band — bei
    Schwellwert 5 verliert der Filter also nichts.
 3. Exakte Hamming-Distanz auf den Kandidaten, dann **Union-Find** → Cluster.
-4. Pro Cluster bleibt ein Bild übrig, Priorität `siim > javed > mittal` (SIIM
-   zuerst, weil nur dort Patienten-IDs hängen).
+4. Pro Cluster bleibt ein Bild übrig, Priorität `isic2020 > javed > mittal`
+   (ISIC zuerst, weil nur dort Patienten-IDs hängen).
 5. Cluster mit **widersprüchlichen Labels** werden komplett verworfen und
    protokolliert — ein Bild, das einmal benigne und einmal maligne annotiert ist,
    ist als Trainingssignal wertlos.
@@ -201,6 +238,9 @@ zuverlässig.
 
 ## Lizenz / Daten
 
-Der Code liegt in einem privaten Repository. Die Datensätze unterliegen den
-jeweiligen Kaggle-Lizenzbedingungen und werden **nicht** mitversioniert
-(`data/` steht in `.gitignore`).
+Der Code liegt in einem privaten Repository. Die Daten werden **nicht**
+mitversioniert (`/data/` steht in `.gitignore`).
+
+Der ISIC-Datensatz steht unter **CC-BY-NC 4.0** — Namensnennung erforderlich,
+kommerzielle Nutzung ausgeschlossen. Details und Zitationsvorgabe in
+[`CITATION.md`](CITATION.md).

@@ -14,8 +14,12 @@ Verfahren:
      der Filter verliert bei Schwellwert <= 5 also nichts.
   3. Exakte Hamming-Distanz auf den Kandidaten, dann Union-Find -> Cluster.
   4. Pro Cluster bleibt genau ein Bild uebrig. Prioritaet nach Quelle
-     (Default: siim > javed > mittal), weil SIIM als einzige Quelle
+     (Default: isic2020 > javed > mittal), weil ISIC als einzige Quelle
      Patienten-IDs mitbringt, die wir fuer den Split brauchen.
+
+Zusaetzlich liefert das ISIC-Archiv eine offizielle Liste von 424 bekannten
+Duplikatpaaren im Trainingsset. Die wird direkt eingespeist - sie ist
+Ground Truth und braucht keinen Schwellwert.
 
 Cluster mit widerspruechlichen Labels werden protokolliert und komplett
 verworfen - ein Bild, das einmal als benigne und einmal als maligne annotiert
@@ -26,7 +30,8 @@ from __future__ import annotations
 
 import sys
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
@@ -58,17 +63,29 @@ def _phash_one(args: tuple[str, int]) -> tuple[str, int | None]:
 
 
 def compute_hashes(paths: list[str], hash_size: int = 8, workers: int = 8) -> dict[str, int | None]:
-    results: dict[str, int | None] = {}
     tasks = [(p, hash_size) for p in paths]
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        for path, value in tqdm(
-            pool.map(_phash_one, tasks, chunksize=64),
-            total=len(tasks),
-            desc="phash",
-            unit="img",
-        ):
-            results[path] = value
-    return results
+
+    def run(pool_cls) -> dict[str, int | None]:
+        results: dict[str, int | None] = {}
+        with pool_cls(max_workers=workers) as pool:
+            for path, value in tqdm(
+                pool.map(_phash_one, tasks, chunksize=64),
+                total=len(tasks),
+                desc="phash",
+                unit="img",
+            ):
+                results[path] = value
+        return results
+
+    try:
+        return run(ProcessPoolExecutor)
+    except (BrokenProcessPool, RuntimeError):
+        # macOS startet Prozesse per spawn, dafuer muss __main__ importierbar
+        # sein. Aus einem Notebook, einer REPL oder einem Skript ohne
+        # if __name__ == "__main__"-Guard ist das nicht gegeben. Dann eben
+        # Threads: PIL gibt die GIL beim Dekodieren frei, das bleibt brauchbar.
+        print("[dedup] Prozess-Pool nicht verfuegbar, weiche auf Threads aus")
+        return run(ThreadPoolExecutor)
 
 
 # --------------------------------------------------------------------------- #
@@ -79,6 +96,22 @@ def _popcount(x: np.ndarray) -> np.ndarray:
         return np.bitwise_count(x)
     lut = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
     return lut[x.view(np.uint8).reshape(-1, 8)].sum(axis=1)
+
+
+def _resolve_known_pairs(
+    df: pd.DataFrame, known_pairs: list[tuple[str, str]] | None
+) -> list[tuple[int, int]]:
+    """Uebersetzt bekannte Duplikatpaare (image_id) in Zeilenindizes."""
+    if not known_pairs:
+        return []
+    position = {image_id: i for i, image_id in enumerate(df["image_id"])}
+    resolved = [
+        (position[a], position[b])
+        for a, b in known_pairs
+        if a in position and b in position
+    ]
+    print(f"[dedup] {len(resolved)} von {len(known_pairs)} offiziellen Duplikatpaaren zugeordnet")
+    return resolved
 
 
 class _UnionFind:
@@ -97,11 +130,23 @@ class _UnionFind:
             self.parent[rb] = ra
 
 
-def cluster_by_hash(hashes: np.ndarray, max_hamming: int, bands: int = 8) -> np.ndarray:
-    """Gibt fuer jedes Element die Cluster-ID zurueck."""
+def cluster_by_hash(
+    hashes: np.ndarray,
+    max_hamming: int,
+    bands: int = 8,
+    extra_pairs: list[tuple[int, int]] | None = None,
+) -> np.ndarray:
+    """Gibt fuer jedes Element die Cluster-ID zurueck.
+
+    `extra_pairs` sind vorab bekannte Duplikate (Zeilenindizes), die
+    unabhaengig vom Hash-Schwellwert zusammengefuehrt werden.
+    """
     n = len(hashes)
     uf = _UnionFind(n)
     band_width = HASH_BITS // bands
+
+    for a, b in extra_pairs or []:
+        uf.union(a, b)
 
     for band in range(bands):
         shift = band * band_width
@@ -134,9 +179,10 @@ def deduplicate(
     max_hamming: int = 5,
     source_priority: list[str] | None = None,
     workers: int = 8,
+    known_pairs: list[tuple[str, str]] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Gibt (bereinigtes Manifest, Duplikat-Report) zurueck."""
-    source_priority = source_priority or ["siim", "javed", "mittal"]
+    source_priority = source_priority or ["isic2020", "javed", "mittal"]
     prio = {src: i for i, src in enumerate(source_priority)}
 
     df = manifest.copy().reset_index(drop=True)
@@ -151,7 +197,11 @@ def deduplicate(
 
     values = df["phash"].to_numpy(dtype=np.uint64)
     print(f"[dedup] clustere {len(values)} Bilder (max_hamming={max_hamming}) ...")
-    df["cluster_id"] = cluster_by_hash(values, max_hamming=max_hamming)
+    df["cluster_id"] = cluster_by_hash(
+        values,
+        max_hamming=max_hamming,
+        extra_pairs=_resolve_known_pairs(df, known_pairs),
+    )
 
     df["_prio"] = df["source"].map(lambda s: prio.get(s, len(prio)))
     grouped = df.groupby("cluster_id")
@@ -188,6 +238,18 @@ def deduplicate(
     return kept, report
 
 
+def load_isic_duplicate_pairs(raw_dir: Path) -> list[tuple[str, str]]:
+    """Offizielle Duplikatliste des ISIC-Archivs, uebersetzt in image_id-Paare."""
+    path = raw_dir / "isic2020" / "ISIC_2020_Training_Duplicates.csv"
+    if not path.exists():
+        return []
+    df = pd.read_csv(path)
+    return [
+        (f"isic2020/{a}", f"isic2020/{b}")
+        for a, b in zip(df["image_name_1"], df["image_name_2"])
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -218,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         max_hamming=d["max_hamming"],
         source_priority=d["source_priority"],
         workers=d["workers"],
+        known_pairs=load_isic_duplicate_pairs(paths.raw),
     )
 
     report_path = paths.reports / "duplicates.csv"

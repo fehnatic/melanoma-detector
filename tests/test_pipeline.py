@@ -48,32 +48,32 @@ def test_deduplicate_prefers_priority_source(tmp_path, monkeypatch):
     frame = pd.DataFrame(
         {
             "image_path": ["a.jpg", "b.jpg", "c.jpg"],
-            "source": ["mittal", "siim", "javed"],
+            "source": ["mittal", "isic2020", "javed"],
             "label": [1, 1, 0],
             "patient_id": ["p1", "p2", "p3"],
             "orig_split": ["train"] * 3,
-            "image_id": ["mittal/a", "siim/b", "javed/c"],
+            "image_id": ["mittal/a", "isic2020/b", "javed/c"],
         }
     )
     # a und b sind dasselbe Bild, c ist verschieden.
     fake = {"a.jpg": 42, "b.jpg": 42, "c.jpg": (1 << 63) | 0xFFFF}
     monkeypatch.setattr("melanoma.data.dedup.compute_hashes", lambda paths, **kw: fake)
 
-    kept, report = deduplicate(frame, source_priority=["siim", "javed", "mittal"])
-    assert set(kept["image_id"]) == {"siim/b", "javed/c"}
+    kept, report = deduplicate(frame, source_priority=["isic2020", "javed", "mittal"])
+    assert set(kept["image_id"]) == {"isic2020/b", "javed/c"}
     assert report["image_id"].tolist() == ["mittal/a"]
-    assert report["kept_instead"].tolist() == ["siim/b"]
+    assert report["kept_instead"].tolist() == ["isic2020/b"]
 
 
 def test_deduplicate_drops_label_conflicts(monkeypatch):
     frame = pd.DataFrame(
         {
             "image_path": ["a.jpg", "b.jpg"],
-            "source": ["siim", "mittal"],
+            "source": ["isic2020", "mittal"],
             "label": [0, 1],
             "patient_id": ["p1", "p2"],
             "orig_split": ["train", "train"],
-            "image_id": ["siim/a", "mittal/b"],
+            "image_id": ["isic2020/a", "mittal/b"],
         }
     )
     monkeypatch.setattr(
@@ -94,11 +94,11 @@ def test_split_keeps_patients_together():
             rows.append(
                 {
                     "image_path": f"{p}_{k}.jpg",
-                    "source": "siim",
+                    "source": "isic2020",
                     "label": label,
                     "patient_id": f"p{p}",
                     "orig_split": "train",
-                    "image_id": f"siim/{p}_{k}",
+                    "image_id": f"isic2020/{p}_{k}",
                 }
             )
     df = make_splits(pd.DataFrame(rows), val_fraction=0.15, test_fraction=0.15, seed=1)
@@ -185,3 +185,36 @@ def test_calibrator_temperature_roundtrip(tmp_path):
     # T > 1 zieht Werte Richtung 0.5, 0.5 bleibt fix.
     assert calibrator(np.array([0.5]))[0] == pytest.approx(0.5)
     assert calibrator(np.array([0.9]))[0] < 0.9
+
+
+def test_known_duplicate_pairs_are_merged_regardless_of_hash():
+    """Die offizielle ISIC-Duplikatliste ist Ground Truth und muss auch dann
+    greifen, wenn die pHash-Distanz ueber dem Schwellwert liegt."""
+    hashes = np.array([np.uint64(0), np.uint64(0xFFFFFFFFFFFFFFFF)], dtype=np.uint64)
+    assert len(set(cluster_by_hash(hashes, max_hamming=5).tolist())) == 2
+    merged = cluster_by_hash(hashes, max_hamming=5, extra_pairs=[(0, 1)])
+    assert merged[0] == merged[1]
+
+
+def test_deduplicate_honours_known_pairs(monkeypatch):
+    frame = pd.DataFrame(
+        {
+            "image_path": ["a.jpg", "b.jpg"],
+            "source": ["isic2020", "isic2020"],
+            "label": [1, 1],
+            "patient_id": ["p1", "p2"],
+            "orig_split": ["train", "train"],
+            "image_id": ["isic2020/A", "isic2020/B"],
+        }
+    )
+    # Hashes weit auseinander -> ohne die Liste wuerde nichts zusammengefuehrt.
+    monkeypatch.setattr(
+        "melanoma.data.dedup.compute_hashes",
+        lambda paths, **kw: {"a.jpg": 0, "b.jpg": 0xFFFFFFFFFFFFFFFF},
+    )
+    kept, _ = deduplicate(frame)
+    assert len(kept) == 2
+
+    kept, report = deduplicate(frame, known_pairs=[("isic2020/A", "isic2020/B")])
+    assert len(kept) == 1
+    assert report["image_id"].tolist() == ["isic2020/B"]

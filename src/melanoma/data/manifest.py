@@ -3,9 +3,9 @@
 Ergebnis: data/interim/manifest_raw.csv mit den Spalten
 
     image_path   absoluter Pfad zum Bild
-    source       siim | mittal | javed
+    source       isic2020 | mittal | javed
     label        0 = benigne, 1 = maligne
-    patient_id   nur SIIM hat echte Patienten-IDs. Fuer die anderen Quellen
+    patient_id   nur ISIC 2020 hat echte Patienten-IDs. Fuer die anderen Quellen
                  bekommt jedes Bild seine eigene Gruppe, damit der spaetere
                  gruppenweise Split nicht faelschlich Bilder zusammenzieht.
     orig_split   urspruengliche Zuordnung der Quelle (train/test/unknown)
@@ -32,35 +32,37 @@ def _iter_images(root: Path):
             yield path
 
 
-def build_siim(raw_dir: Path) -> pd.DataFrame:
-    """SIIM: Labels und Patienten-IDs kommen aus train.csv."""
-    root = raw_dir / "siim"
-    csv_path = root / "train.csv"
+def build_isic2020(raw_dir: Path) -> pd.DataFrame:
+    """ISIC 2020: Labels, Patienten- und Laesions-IDs kommen aus der Ground-Truth-CSV."""
+    root = raw_dir / "isic2020"
+    csv_path = root / "ISIC_2020_Training_GroundTruth_v2.csv"
     if not csv_path.exists():
-        print(f"[manifest] SIIM uebersprungen (kein {csv_path})")
+        print(f"[manifest] isic2020 uebersprungen (kein {csv_path})")
         return pd.DataFrame()
 
     df = pd.read_csv(csv_path)
-    jpeg_dir = root / "jpeg" / "train"
-    df["image_path"] = df["image_name"].map(lambda n: str(jpeg_dir / f"{n}.jpg"))
 
-    exists = df["image_path"].map(lambda p: Path(p).exists())
-    missing = int((~exists).sum())
+    # Die ZIP-Struktur ist nicht garantiert, deshalb einmal alle JPEGs indexieren
+    # und ueber den Dateinamen zuordnen.
+    index = {path.stem: path for path in (root / "images").rglob("*.jpg")}
+    df["image_path"] = df["image_name"].map(lambda n: str(index[n]) if n in index else None)
+
+    missing = int(df["image_path"].isna().sum())
     if missing:
-        print(f"[manifest] SIIM: {missing} in train.csv gelistete Bilder fehlen lokal -> ignoriert")
-    df = df[exists].copy()
+        print(f"[manifest] isic2020: {missing} in der CSV gelistete Bilder fehlen lokal -> ignoriert")
+    df = df.dropna(subset=["image_path"]).copy()
 
     out = pd.DataFrame(
         {
             "image_path": df["image_path"],
-            "source": "siim",
+            "source": "isic2020",
             "label": df["target"].astype(int),
-            "patient_id": "siim:" + df["patient_id"].astype(str),
+            "patient_id": "isic2020:" + df["patient_id"].astype(str),
             "orig_split": "train",
-            "image_id": "siim/" + df["image_name"].astype(str),
+            "image_id": "isic2020/" + df["image_name"].astype(str),
         }
     )
-    print(f"[manifest] siim: {len(out)} Bilder ({int(out.label.sum())} maligne)")
+    print(f"[manifest] isic2020: {len(out)} Bilder ({int(out.label.sum())} maligne)")
     return out
 
 
@@ -113,7 +115,7 @@ def build_folder_dataset(raw_dir: Path, source: str) -> pd.DataFrame:
 
 def build_manifest(raw_dir: Path) -> pd.DataFrame:
     frames = [
-        build_siim(raw_dir),
+        build_isic2020(raw_dir),
         build_folder_dataset(raw_dir, "mittal"),
         build_folder_dataset(raw_dir, "javed"),
     ]
