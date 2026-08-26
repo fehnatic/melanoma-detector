@@ -1,0 +1,25 @@
+# Daten & Artefakte (nie ins Repo).
+# Fuehrender Slash ist wichtig: sonst greift die Regel auch auf
+# src/melanoma/data/ und schliesst Quellcode aus.
+/data/
+/artifacts/
+/reports/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Kaggle-Credentials
+kaggle.json
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store

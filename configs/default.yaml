@@ -1,0 +1,63 @@
+# Zentrale Konfiguration. Alle Pfade relativ zum Repo-Root.
+
+paths:
+  raw: data/raw
+  interim: data/interim
+  processed: data/processed
+  artifacts: artifacts
+  reports: reports
+
+download:
+  # "jpeg"  = nur die benoetigten SIIM-JPEGs + CSVs (~23 GB, empfohlen)
+  # "full"  = kompletter Competition-Download inkl. DICOM (~108 GB)
+  siim_mode: jpeg
+  workers: 8
+  retries: 4
+
+dedup:
+  # Perceptual Hash: 8 -> 64 Bit. Zwei Bilder gelten als Duplikat,
+  # wenn ihre Hamming-Distanz <= max_hamming ist.
+  hash_size: 8
+  max_hamming: 5
+  # Welche Quelle bei einem Duplikat-Cluster gewinnt (erste = hoechste Prio).
+  # SIIM zuerst, weil dort Patienten-IDs fuer den Split haengen.
+  source_priority: [siim, javed, mittal]
+  workers: 8
+
+split:
+  val_fraction: 0.15
+  test_fraction: 0.15
+  seed: 42
+
+data:
+  image_size: 384
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+train:
+  backbone: tf_efficientnetv2_s.in1k
+  epochs: 12
+  batch_size: 24
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  warmup_epochs: 1
+  num_workers: 6
+  # Klassenungleichgewicht: "sampler" (oversampling) | "pos_weight" | "none"
+  imbalance: sampler
+  label_smoothing: 0.01
+  ema_decay: 0.999
+  grad_clip: 1.0
+  device: auto          # auto | mps | cuda | cpu
+  amp: false            # auf MPS bewusst aus (bf16-Autocast ist dort noch wackelig)
+  early_stopping_patience: 4
+
+calibration:
+  # "isotonic" | "temperature" | "none"
+  method: isotonic
+  # Prävalenz, auf die die ausgegebene Wahrscheinlichkeit umgerechnet wird.
+  # null = Prävalenz des Validierungssets beibehalten.
+  target_prevalence: null
+
+inference:
+  tta: true
+  threshold: 0.5
