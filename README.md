@@ -210,6 +210,39 @@ Beispiele nicht aufwiegen. **Konsequenz:** Produktionsmodell nutzt nur
 (z. B. mit Sample-Gewichtung statt voller Beimischung), aber nicht für
 naives Zusammenwerfen.
 
+### Nicht-quadratische Fotos: Crop statt Padding (auch ausprobiert, verworfen)
+
+Bei einem breiten oder hohen Foto muss vor der Klassifikation irgendwie ein
+Quadrat draus werden. Standard hier ist **Resize + CenterCrop**: die Ränder
+werden abgeschnitten. Bei einem sehr breiten, unzentrierten Handyfoto kann das
+im Extremfall die Läsion mit wegschneiden — deshalb lag die Idee nahe, den
+Zuschnitt durch **Padding** zu ersetzen (Bild vollständig erhalten, Ränder mit
+Spiegelung auffüllen, siehe `melanoma.data.dataset.build_transforms(...,
+pad_to_square=True)`). Gemessen statt angenommen:
+
+| Eval-Transform | ISIC-Test-AUROC |
+|---|---|
+| Resize + CenterCrop (Standard) | **0.9075** |
+| Padding statt Crop | **0.878** (−0.03) |
+
+Padding macht es **schlechter**, nicht besser: Training läuft über
+`RandomResizedCrop` auf denselben (rechteckigen) ISIC-Rohbildern — das Modell
+hat also gelernt, einen bestimmten Bildausschnitt/Zoom zu erwarten. Ein
+komplett reingepolstertes Bild sieht dafür ungewohnt "herausgezoomt" aus, das
+kostet AUROC. **Konsequenz:** Crop bleibt der Standard; `pad_to_square` existiert
+als getestete, aber bewusst nicht aktivierte Option (`--pad-to-square`-Flag in
+`evaluate.py`/`eval_external.py`). Die eigentlich sinnvolle Reaktion auf schlecht
+gerahmte Fotos ist eine Empfehlung an die Nutzer:in (Läsion mittig,
+bildfüllend fotografieren), nicht ein Eingriff in die Vorverarbeitung.
+
+Beim Nachschauen ist dabei ein echter Bug aufgefallen: Die Grad-CAM-Heatmap
+("Worauf das Modell schaut" in der App) hat den Hintergrund über ein
+eigenständiges `image.resize((size, size))` erzeugt — das **staucht** ein
+nicht-quadratisches Foto, statt es zuzuschneiden, und zeigt damit einen
+anderen Bildausschnitt als den, der tatsächlich klassifiziert wurde. Behoben,
+indem Heatmap und Klassifikation jetzt denselben Zuschnitt teilen
+(`build_preview_crop()` in `dataset.py`).
+
 ---
 
 ## Verlaufstracking

@@ -56,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--splits-name", default="default")
     parser.add_argument("--run-name", default="baseline")
     parser.add_argument("--split", default="test", choices=["test", "val", "train"])
+    parser.add_argument(
+        "--pad-to-square",
+        action="store_true",
+        help="Bild vollstaendig erhalten (Padding) statt Resize+CenterCrop - siehe dataset.build_transforms",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -72,7 +77,9 @@ def main(argv: list[str] | None = None) -> int:
     model.load_state_dict(ckpt["state_dict"])
 
     df = load_split(paths.processed / f"splits_{args.splits_name}.csv", args.split)
-    transform = build_transforms(ckpt["image_size"], ckpt["mean"], ckpt["std"], train=False)
+    transform = build_transforms(
+        ckpt["image_size"], ckpt["mean"], ckpt["std"], train=False, pad_to_square=args.pad_to_square
+    )
     loader = DataLoader(
         MelanomaDataset(df, transform),
         batch_size=cfg["train"]["batch_size"],
@@ -118,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
             "auroc": float(roc_auc_score(y, p)) if len(np.unique(y)) > 1 else None,
         }
 
-    out = paths.reports / f"metrics_{args.run_name}_{args.split}.json"
+    suffix = "_padded" if args.pad_to_square else ""
+    out = paths.reports / f"metrics_{args.run_name}_{args.split}{suffix}.json"
     paths.reports.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))

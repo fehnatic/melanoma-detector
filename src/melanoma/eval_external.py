@@ -58,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None)
     parser.add_argument("--run-name", default="baseline")
     parser.add_argument("--dataset", default="pad_ufes_20", choices=list(DATASETS))
+    parser.add_argument(
+        "--pad-to-square",
+        action="store_true",
+        help="Bild vollstaendig erhalten (Padding) statt Resize+CenterCrop - siehe dataset.build_transforms",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -76,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
     df = DATASETS[args.dataset](paths.raw)
     print(f"{args.dataset}: {len(df)} Bilder ({df['label'].mean():.3%} maligne)")
 
-    transform = build_transforms(ckpt["image_size"], ckpt["mean"], ckpt["std"], train=False)
+    transform = build_transforms(
+        ckpt["image_size"], ckpt["mean"], ckpt["std"], train=False, pad_to_square=args.pad_to_square
+    )
     loader = DataLoader(
         MelanomaDataset(df, transform),
         batch_size=cfg["train"]["batch_size"],
@@ -113,7 +120,8 @@ def main(argv: list[str] | None = None) -> int:
         "operating_points": operating_points(labels, probs),
     }
 
-    out = paths.reports / f"metrics_{args.run_name}_{args.dataset}.json"
+    suffix = "_padded" if args.pad_to_square else ""
+    out = paths.reports / f"metrics_{args.run_name}_{args.dataset}{suffix}.json"
     paths.reports.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))

@@ -9,6 +9,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset, WeightedRandomSampler
 from torchvision.transforms import v2
+from torchvision.transforms.v2 import functional as TF
 
 
 class MelanomaDataset(Dataset):
@@ -29,9 +30,47 @@ class MelanomaDataset(Dataset):
         return image, torch.tensor(float(self.labels[idx]))
 
 
-def build_transforms(image_size: int, mean, std, train: bool):
+def _pad_to_square(img):
+    """Polstert ein Bild mit gespiegelten Randpixeln auf ein Quadrat auf, statt
+    etwas abzuschneiden. Fuer Fotos mit beliebigem Seitenverhaeltnis (normale
+    Handyfotos) wichtig: ISIC/PAD-UFES sind kuratiert und nahezu quadratisch,
+    ein frei aufgenommenes Foto aber nicht - CenterCrop wuerde dabei im
+    schlimmsten Fall die Laesion abschneiden, wenn sie nicht exakt mittig ist.
+    """
+    w, h = img.size if hasattr(img, "size") else img.shape[-1::-1][:2]
+    diff = abs(w - h)
+    if diff == 0:
+        return img
+    pad1, pad2 = diff // 2, diff - diff // 2
+    padding = (0, pad1, 0, pad2) if w > h else (pad1, 0, pad2, 0)
+    try:
+        return TF.pad(img, padding, padding_mode="reflect")
+    except RuntimeError:
+        # reflect verlangt Padding < Kantenlaenge - bei extremen Seitenverhaeltnissen
+        # (z.B. Screenshot-Streifen) auf Randwiederholung ausweichen, die dafuer keine
+        # Grenze kennt.
+        return TF.pad(img, padding, padding_mode="edge")
+
+
+def build_preview_crop(image_size: int):
+    """Reine PIL->PIL-Variante des Eval-Zuschnitts (Resize+CenterCrop), ohne
+    Tensor-Konvertierung/Normalisierung. Damit laesst sich anzeigen, was das
+    Modell tatsaechlich zu sehen bekommt - z.B. als Grundlage fuer die
+    Grad-CAM-Heatmap in explain.py. Wichtig: exakt dieselben Schritte wie im
+    Eval-Zweig von build_transforms(train=False, pad_to_square=False), sonst
+    passen Heatmap und angezeigtes Bild nicht zusammen."""
+    return v2.Compose([v2.Resize(int(image_size * 1.15)), v2.CenterCrop(image_size)])
+
+
+def build_transforms(image_size: int, mean, std, train: bool, pad_to_square: bool = False):
     """Dermatoskopische Bilder haben keine kanonische Orientierung - Flips und
-    Rotationen in alle Richtungen sind daher unbedenklich und wirksam."""
+    Rotationen in alle Richtungen sind daher unbedenklich und wirksam.
+
+    `pad_to_square` betrifft nur den Eval-Zweig: statt Resize+CenterCrop (schneidet
+    bei nicht-quadratischen Bildern Inhalt weg) wird das Bild vollstaendig erhalten
+    und auf ein Quadrat aufgepolstert. Siehe `_pad_to_square`. Gemessen kostet das
+    aber AUROC (siehe README) - Standard bleibt daher Resize+CenterCrop.
+    """
     if train:
         return v2.Compose(
             [
@@ -46,10 +85,19 @@ def build_transforms(image_size: int, mean, std, train: bool):
                 v2.RandomErasing(p=0.2, scale=(0.02, 0.1)),
             ]
         )
+    if pad_to_square:
+        return v2.Compose(
+            [
+                v2.Lambda(_pad_to_square),
+                v2.Resize((image_size, image_size)),
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=mean, std=std),
+            ]
+        )
     return v2.Compose(
         [
-            v2.Resize(int(image_size * 1.15)),
-            v2.CenterCrop(image_size),
+            *build_preview_crop(image_size).transforms,
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=mean, std=std),
