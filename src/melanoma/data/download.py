@@ -15,6 +15,10 @@ Zwei verschiedene Bezugswege, aus gutem Grund:
   Authorization-Header). Sollte Kaggle das irgendwann dichtmachen, siehe den
   Hinweis in download_kaggle_dataset().
 
+* PAD-UFES-20 (klinische Handyfotos, fuer die Cross-Domain-Auswertung in
+  melanoma.eval_external) liegt ebenfalls im ISIC-Archiv, als Collection 406 -
+  gleicher Zugriffsweg wie ISIC 2020, kein Account noetig. Lizenz: CC-BY.
+
 Ergebnis: Das gesamte Projekt braucht keinerlei Zugangsdaten.
 """
 
@@ -22,10 +26,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pandas as pd
 import requests
+from tqdm import tqdm
 
 ISIC_S3 = "https://isic-challenge-data.s3.amazonaws.com/2020"
 ISIC_FILES = {
@@ -39,6 +47,10 @@ DATASET_SLUGS = {
     "mittal": "bhaveshmittal/melanoma-cancer-dataset",
     "javed": "hasnainjaved/melanoma-skin-cancer-dataset-of-10000-images",
 }
+
+# ISIC-Archiv-Collection-ID von PAD-UFES-20 (https://api.isic-archive.com/collections/406/).
+ISIC_API = "https://api.isic-archive.com/api/v2"
+PAD_UFES20_COLLECTION = 406
 
 
 def _human(num_bytes: float) -> str:
@@ -176,6 +188,84 @@ def download_kaggle_dataset(name: str, raw_dir: Path, dry_run: bool = False) -> 
     return target
 
 
+# --------------------------------------------------------------------------- #
+# PAD-UFES-20 (klinische Handyfotos, ISIC-Archiv-Mirror)
+# --------------------------------------------------------------------------- #
+def _pad_ufes20_records() -> list[dict]:
+    """Paginiert durch die ISIC-API und sammelt alle Bild-Metadaten der Collection."""
+    records: list[dict] = []
+    url = f"{ISIC_API}/images/search/?collections={PAD_UFES20_COLLECTION}&limit=100"
+    while url:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        page = resp.json()
+        records.extend(page["results"])
+        url = page.get("next")
+    return records
+
+
+def download_pad_ufes20(raw_dir: Path, dry_run: bool = False, workers: int = 8) -> Path:
+    target = raw_dir / "pad_ufes_20"
+    records = _pad_ufes20_records()
+    total_size = sum(r["files"]["full"]["size"] for r in records)
+
+    if dry_run:
+        print("PAD-UFES-20 (ISIC-Archiv Collection 406, klinische Handyfotos, CC-BY):")
+        print(f"  {len(records)} Bilder, {_human(total_size)}")
+        return target
+
+    images_dir = target / "images"
+    gt_path = target / "ground_truth.csv"
+    if gt_path.exists() and images_dir.exists() and len(list(images_dir.glob("*.jpg"))) == len(records):
+        print(f"[pad_ufes_20] bereits vollstaendig -> {target}")
+        return target
+
+    images_dir.mkdir(parents=True, exist_ok=True)
+    print(f"PAD-UFES-20: lade {len(records)} Bilder ({_human(total_size)}) ...")
+
+    def _one(rec: dict) -> dict | None:
+        image_id = rec["isic_id"]
+        info = rec["files"]["full"]
+        dest = images_dir / f"{image_id}.jpg"
+        if not (dest.exists() and dest.stat().st_size == info["size"]):
+            # Bei 2298 Einzelverbindungen reisst hin und wieder eine ab (verifiziert:
+            # ConnectionResetError) - ein paar Versuche abfedern das, statt den
+            # gesamten Lauf abzubrechen und die bereits geladenen Bilder zu verwerfen.
+            for attempt in range(3):
+                try:
+                    resp = requests.get(info["url"], timeout=60)
+                    resp.raise_for_status()
+                    dest.write_bytes(resp.content)
+                    break
+                except requests.exceptions.RequestException as exc:
+                    if attempt == 2:
+                        print(f"[pad_ufes_20] {image_id}: {exc} - uebersprungen")
+                        return None
+                    time.sleep(2 * (attempt + 1))
+
+        clinical = rec["metadata"].get("clinical", {})
+        diagnosis = clinical.get("diagnosis_3") or clinical.get("diagnosis_2") or clinical.get("diagnosis_1")
+        return {
+            "image_name": image_id,
+            "diagnosis": diagnosis,
+            "patient_id": clinical.get("patient_id", image_id),
+            "lesion_id": clinical.get("lesion_id", image_id),
+            "anatom_site": clinical.get("anatom_site_1"),
+            "age_approx": clinical.get("age_approx"),
+        }
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        rows = list(tqdm(pool.map(_one, records), total=len(records), desc="pad_ufes_20", unit="img"))
+
+    failed = rows.count(None)
+    rows = [r for r in rows if r is not None]
+    pd.DataFrame(rows).to_csv(gt_path, index=False)
+    if failed:
+        print(f"  {failed} Bilder trotz Retries fehlgeschlagen - erneuter Aufruf laedt nur die fehlenden nach")
+    print(f"  fertig: {len(rows)} Bilder -> {target}")
+    return target
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -187,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         "--sources",
         nargs="+",
         default=["isic2020", "mittal", "javed"],
-        choices=["isic2020", "mittal", "javed"],
+        choices=["isic2020", "mittal", "javed", "pad_ufes_20"],
     )
     parser.add_argument("--keep-zip", action="store_true", help="ISIC-ZIP nach dem Entpacken behalten")
     parser.add_argument("--dry-run", action="store_true", help="nur Groessen anzeigen, nichts laden")
@@ -200,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     for source in args.sources:
         if source == "isic2020":
             download_isic2020(paths.raw, keep_zip=args.keep_zip, dry_run=args.dry_run)
+        elif source == "pad_ufes_20":
+            download_pad_ufes20(paths.raw, dry_run=args.dry_run)
         else:
             download_kaggle_dataset(source, paths.raw, dry_run=args.dry_run)
 

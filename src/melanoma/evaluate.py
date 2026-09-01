@@ -53,6 +53,7 @@ def predict_loader(model, loader, device) -> np.ndarray:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Modell auf dem Testsplit auswerten")
     parser.add_argument("--config", default=None)
+    parser.add_argument("--splits-name", default="default")
     parser.add_argument("--run-name", default="baseline")
     parser.add_argument("--split", default="test", choices=["test", "val", "train"])
     args = parser.parse_args(argv)
@@ -70,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     model = build_model(ckpt["backbone"], pretrained=False).to(device)
     model.load_state_dict(ckpt["state_dict"])
 
-    df = load_split(paths.processed / "splits.csv", args.split)
+    df = load_split(paths.processed / f"splits_{args.splits_name}.csv", args.split)
     transform = build_transforms(ckpt["image_size"], ckpt["mean"], ckpt["std"], train=False)
     loader = DataLoader(
         MelanomaDataset(df, transform),

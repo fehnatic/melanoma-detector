@@ -25,3 +25,18 @@ werden, solange es auf diesen Daten basiert.
 
 Beide sind Ableitungen des ISIC-Archivs. Es gelten die jeweils auf der
 Kaggle-Seite angegebenen Lizenzbedingungen.
+
+## PAD-UFES-20 (Handyfoto-Fine-Tuning)
+
+Klinische Handyfotos, gespiegelt im ISIC-Archiv (Collection 406) unter
+**CC-BY 4.0** (Namensnennung, kommerzielle Nutzung erlaubt).
+https://creativecommons.org/licenses/by/4.0/legalcode.txt
+
+Bei Verwendung ist zu zitieren:
+
+> Pacheco, A.G.C. et al. PAD-UFES-20: A skin lesion dataset composed of patient
+> data and clinical images collected from smartphones. Data in Brief 32, 106221
+> (2020). https://doi.org/10.1016/j.dib.2020.106221
+
+Beitragende Institution: Universidade Federal do Espírito Santo (UFES),
+Programa de Assistência Dermatológica e Cirúrgica (PAD).

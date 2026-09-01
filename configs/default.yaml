@@ -6,6 +6,7 @@ paths:
   processed: data/processed
   artifacts: artifacts
   reports: reports
+  tracking: tracking
 
 download:
   # ISIC 2020 kommt direkt vom ISIC-Archiv (kein Kaggle-Account noetig).
@@ -23,12 +24,19 @@ dedup:
   workers: 8
 
 split:
+  # null = alle Quellen. eval_sources begrenzt, woraus Val/Test stammen duerfen;
+  # Bilder anderer Quellen gehen vollstaendig ins Training.
+  sources: null
+  eval_sources: null
   val_fraction: 0.15
   test_fraction: 0.15
   seed: 42
 
 data:
   image_size: 384
+  # Einmalige Vorverkleinerung (melanoma.data.prepare).
+  # Muss >= image_size sein, damit RandomResizedCrop noch Spielraum hat.
+  cache_max_side: 512
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
 

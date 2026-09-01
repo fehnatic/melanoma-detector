@@ -70,6 +70,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> dict
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Melanom-Klassifikator trainieren")
     parser.add_argument("--config", default=None)
+    parser.add_argument("--splits-name", default="default")
     parser.add_argument("--backbone", default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
@@ -95,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     device = pick_device(args.device or t["device"])
     print(f"Device: {device} | Backbone: {backbone} | {image_size}px | bs={batch_size}")
 
-    splits_csv = paths.processed / "splits.csv"
+    splits_csv = paths.processed / f"splits_{args.splits_name}.csv"
     if not splits_csv.exists():
         raise SystemExit(f"{splits_csv} fehlt - erst 'make data' laufen lassen.")
 
