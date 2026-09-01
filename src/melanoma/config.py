@@ -31,9 +31,10 @@ class Paths:
     processed: Path
     artifacts: Path
     reports: Path
+    tracking: Path
 
     def mkdirs(self) -> None:
-        for p in (self.raw, self.interim, self.processed, self.artifacts, self.reports):
+        for p in (self.raw, self.interim, self.processed, self.artifacts, self.reports, self.tracking):
             p.mkdir(parents=True, exist_ok=True)
 
 
@@ -53,4 +54,5 @@ def resolve_paths(cfg: Config, root: Path | None = None) -> Paths:
         processed=root / p["processed"],
         artifacts=root / p["artifacts"],
         reports=root / p["reports"],
+        tracking=root / p["tracking"],
     )
