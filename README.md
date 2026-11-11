@@ -385,6 +385,22 @@ If that's too slow:
 `train.amp` is deliberately set to `false`: bf16 autocast isn't yet reliable
 on MPS.
 
+### Experiment tracking (optional)
+
+`melanoma.train` can log params, per-epoch metrics, and the best checkpoint to
+[MLflow](https://mlflow.org/):
+
+```bash
+pip install -e ".[tracking]"
+.venv/bin/python -m melanoma.train --run-name isic_baseline --mlflow
+mlflow ui --backend-store-uri sqlite:///mlflow.db   # -> http://127.0.0.1:5000
+```
+
+Purely additive — training behaves identically either way. Off by default
+(`mlflow.enabled: false` in `configs/default.yaml`); `--mlflow` enables it for
+a single run without touching the config, and `mlflow.tracking_uri` points at
+a local `sqlite:///mlflow.db` by default (or an `http(s)://` MLflow server).
+
 ---
 
 ## Known limitations

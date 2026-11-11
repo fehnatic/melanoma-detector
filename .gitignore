@@ -5,6 +5,10 @@
 /artifacts/
 /reports/
 
+# MLflow lokales Tracking (configs/default.yaml: mlflow.*)
+/mlflow.db
+/mlruns/
+
 # Persoenlicher Muttermal-Verlauf (melanoma.tracking) - eigene Fotos, gehoert
 # niemals ins Repo, auch nicht versehentlich in einem oeffentlichen Fork.
 /tracking/

@@ -2,11 +2,14 @@
 
 Aufruf:  python -m melanoma.train
 Optionen: --epochs, --batch-size, --backbone, --image-size, --limit (Smoke-Test)
+Experiment-Tracking: --mlflow (oder mlflow.enabled: true in der Config),
+braucht `pip install -e ".[tracking]"`.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import sys
@@ -29,6 +32,11 @@ from melanoma.data.dataset import (
     make_balanced_sampler,
 )
 from melanoma.models import ModelEma, build_model, pick_device
+
+try:
+    import mlflow
+except ImportError:
+    mlflow = None
 
 
 def cosine_with_warmup(step: int, total_steps: int, warmup_steps: int) -> float:
@@ -79,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default=None)
     parser.add_argument("--run-name", default="baseline")
     parser.add_argument("--limit", type=int, default=None, help="nur N Trainingsbilder (Smoke-Test)")
+    parser.add_argument(
+        "--mlflow", action="store_true", help="MLflow-Tracking erzwingen (auch wenn mlflow.enabled=false)"
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -87,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
 
     t = dict(cfg["train"])
     d = dict(cfg["data"])
+    m = dict(cfg.get("mlflow", {}))
+    use_mlflow = args.mlflow or m.get("enabled", False)
+    if use_mlflow and mlflow is None:
+        print("Hinweis: MLflow-Tracking angefordert, aber mlflow ist nicht installiert "
+              "(pip install -e \".[tracking]\") - Tracking wird uebersprungen.")
+        use_mlflow = False
     backbone = args.backbone or t["backbone"]
     epochs = args.epochs or t["epochs"]
     batch_size = args.batch_size or t["batch_size"]
@@ -159,77 +176,118 @@ def main(argv: list[str] | None = None) -> int:
     best_auroc, best_epoch, history = -1.0, -1, []
     smoothing = t["label_smoothing"]
 
-    for epoch in range(epochs):
-        model.train()
-        running, seen = 0.0, 0
-        started = time.time()
-        pbar = tqdm(train_loader, desc=f"epoch {epoch + 1}/{epochs}")
-        for images, labels in pbar:
-            images = images.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-            if smoothing:
-                labels = labels * (1 - 2 * smoothing) + smoothing
+    run_ctx = contextlib.nullcontext()
+    if use_mlflow:
+        tracking_uri = m.get("tracking_uri", "mlruns")
+        if "://" not in tracking_uri:
+            tracking_uri = str(paths.root / tracking_uri)
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(m.get("experiment_name", "melanoma"))
+        run_ctx = mlflow.start_run(run_name=args.run_name)
 
-            optimizer.zero_grad(set_to_none=True)
-            loss = criterion(model(images).squeeze(1), labels)
-            loss.backward()
-            if t["grad_clip"]:
-                nn.utils.clip_grad_norm_(model.parameters(), t["grad_clip"])
-            optimizer.step()
-            scheduler.step()
-            if ema:
-                ema.update(model)
-
-            running += loss.item() * images.size(0)
-            seen += images.size(0)
-            pbar.set_postfix(loss=f"{running / seen:.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
-
-        eval_model = ema.module.to(device) if ema else model
-        metrics = evaluate(eval_model, val_loader, device)
-        entry = {
-            "epoch": epoch + 1,
-            "train_loss": running / max(1, seen),
-            "val_loss": metrics["loss"],
-            "val_auroc": metrics["auroc"],
-            "val_ap": metrics["ap"],
-            "seconds": round(time.time() - started, 1),
-        }
-        history.append(entry)
-        print(
-            f"  epoch {epoch + 1}: train_loss={entry['train_loss']:.4f} "
-            f"val_loss={entry['val_loss']:.4f} AUROC={entry['val_auroc']:.4f} "
-            f"AP={entry['val_ap']:.4f} ({entry['seconds']}s)"
-        )
-
-        if metrics["auroc"] > best_auroc:
-            best_auroc, best_epoch = metrics["auroc"], epoch + 1
-            torch.save(
+    with run_ctx:
+        if use_mlflow:
+            mlflow.log_params(
                 {
-                    "state_dict": eval_model.state_dict(),
                     "backbone": backbone,
+                    "epochs": epochs,
+                    "batch_size": batch_size,
                     "image_size": image_size,
-                    "mean": d["mean"],
-                    "std": d["std"],
-                    "epoch": epoch + 1,
-                    "val_auroc": best_auroc,
+                    "lr": lr,
+                    "weight_decay": t["weight_decay"],
+                    "imbalance": t["imbalance"],
+                    "label_smoothing": smoothing,
+                    "ema_decay": t["ema_decay"],
+                    "splits_name": args.splits_name,
+                    "train_size": len(train_df),
+                    "val_size": len(val_df),
                     "train_prevalence": float(train_df["label"].mean()),
-                },
-                run_dir / "best.pt",
+                }
             )
-            np.savez(
-                run_dir / "val_predictions.npz",
-                probs=metrics["probs"],
-                labels=metrics["labels"],
+
+        for epoch in range(epochs):
+            model.train()
+            running, seen = 0.0, 0
+            started = time.time()
+            pbar = tqdm(train_loader, desc=f"epoch {epoch + 1}/{epochs}")
+            for images, labels in pbar:
+                images = images.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                if smoothing:
+                    labels = labels * (1 - 2 * smoothing) + smoothing
+
+                optimizer.zero_grad(set_to_none=True)
+                loss = criterion(model(images).squeeze(1), labels)
+                loss.backward()
+                if t["grad_clip"]:
+                    nn.utils.clip_grad_norm_(model.parameters(), t["grad_clip"])
+                optimizer.step()
+                scheduler.step()
+                if ema:
+                    ema.update(model)
+
+                running += loss.item() * images.size(0)
+                seen += images.size(0)
+                pbar.set_postfix(loss=f"{running / seen:.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
+
+            eval_model = ema.module.to(device) if ema else model
+            metrics = evaluate(eval_model, val_loader, device)
+            entry = {
+                "epoch": epoch + 1,
+                "train_loss": running / max(1, seen),
+                "val_loss": metrics["loss"],
+                "val_auroc": metrics["auroc"],
+                "val_ap": metrics["ap"],
+                "seconds": round(time.time() - started, 1),
+            }
+            history.append(entry)
+            print(
+                f"  epoch {epoch + 1}: train_loss={entry['train_loss']:.4f} "
+                f"val_loss={entry['val_loss']:.4f} AUROC={entry['val_auroc']:.4f} "
+                f"AP={entry['val_ap']:.4f} ({entry['seconds']}s)"
             )
-            print(f"  -> neues bestes Modell (AUROC {best_auroc:.4f})")
+            if use_mlflow:
+                mlflow.log_metrics(
+                    {k: v for k, v in entry.items() if k != "epoch"}, step=entry["epoch"]
+                )
 
-        (run_dir / "history.json").write_text(json.dumps(history, indent=2))
+            if metrics["auroc"] > best_auroc:
+                best_auroc, best_epoch = metrics["auroc"], epoch + 1
+                torch.save(
+                    {
+                        "state_dict": eval_model.state_dict(),
+                        "backbone": backbone,
+                        "image_size": image_size,
+                        "mean": d["mean"],
+                        "std": d["std"],
+                        "epoch": epoch + 1,
+                        "val_auroc": best_auroc,
+                        "train_prevalence": float(train_df["label"].mean()),
+                    },
+                    run_dir / "best.pt",
+                )
+                np.savez(
+                    run_dir / "val_predictions.npz",
+                    probs=metrics["probs"],
+                    labels=metrics["labels"],
+                )
+                print(f"  -> neues bestes Modell (AUROC {best_auroc:.4f})")
 
-        if t["early_stopping_patience"] and epoch + 1 - best_epoch >= t["early_stopping_patience"]:
-            print(f"Early stopping: seit {t['early_stopping_patience']} Epochen keine Besserung.")
-            break
+            (run_dir / "history.json").write_text(json.dumps(history, indent=2))
 
-    print(f"\nBestes Modell: Epoche {best_epoch}, AUROC {best_auroc:.4f} -> {run_dir / 'best.pt'}")
+            if t["early_stopping_patience"] and epoch + 1 - best_epoch >= t["early_stopping_patience"]:
+                print(f"Early stopping: seit {t['early_stopping_patience']} Epochen keine Besserung.")
+                break
+
+        print(f"\nBestes Modell: Epoche {best_epoch}, AUROC {best_auroc:.4f} -> {run_dir / 'best.pt'}")
+
+        if use_mlflow:
+            mlflow.log_metric("best_val_auroc", best_auroc)
+            mlflow.log_param("best_epoch", best_epoch)
+            mlflow.log_artifact(str(run_dir / "history.json"))
+            if (run_dir / "best.pt").exists():
+                mlflow.log_artifact(str(run_dir / "best.pt"))
+
     return 0
 
 

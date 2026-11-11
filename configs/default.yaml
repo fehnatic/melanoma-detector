@@ -67,3 +67,12 @@ calibration:
 inference:
   tta: true
   threshold: 0.5
+
+mlflow:
+  # Experiment-Tracking fuer melanoma.train (pip install -e ".[tracking]").
+  # "false" aendert am Training nichts - Tracking ist rein additiv.
+  enabled: false
+  # sqlite-Datei im Projektroot; alternativ http(s)://<mlflow-server>.
+  # (mlflow >= 3 markiert den reinen Datei-Store "./mlruns" als Legacy-Backend.)
+  tracking_uri: sqlite:///mlflow.db
+  experiment_name: melanoma
